@@ -24,9 +24,12 @@
 
 \subsection{Part 1: 网卡驱动 (NIC Driver)}
 实验的第一部分是让 xv6 能够通过 E1000 网卡驱动收发数据包。
-
+x-special/nautilus-clipboard copy file:///tmp/VMwareDnD/id3yE6/task1\_flowchart.
+png
 \subsubsection{1. 发送功能的实现 (e1000\_transmit)}
 我们实现了 \texttt{e1000\_transmit} 函数。该函数将上层协议栈（ARP/IP）传递下来的 socket buffer (mbuf) 放入发送环形缓冲区（TX Ring）中。
+x-special/nautilus-clipboard copy file:///tmp/VMwareDnD/id3yE6/task1\_flowchart.
+png
 关键步骤包括：
 \begin{enumerate}
     \item 读取 \texttt{E1000\_TDT} 寄存器获取下一个可用的描述符索引。
@@ -81,6 +84,12 @@
 \end{figure}
 
 \section{实质性物证}
+
+\subsection{项目仓库 (Repository)}
+完整的项目代码及历史提交记录已上传至 GitHub：
+\begin{itemize}
+    \item \url{https://github.com/cheung20050509-prog/20232131023_Leheng_Zhang_lab5}
+\end{itemize}
 
 \subsection{调试日志 (Debug Log)}
 \begin{itemize}
