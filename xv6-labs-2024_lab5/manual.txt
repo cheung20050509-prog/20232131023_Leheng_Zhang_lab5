@@ -1,0 +1,18 @@
+# User Manual for XV6 Networking
+
+## Overview
+This version of XV6 includes a driver for the Intel E1000 network card and a basic UDP network stack.
+
+## Networking Features
+- **E1000 Driver**: Handles packet transmission and reception.
+- **UDP Sockets**: Support for `bind`, `send`, `recv` system calls.
+- **ARP/IP**: Basic handling of ARP requests and IP packets.
+
+## Usage
+User programs can include `kernel/net.h` and use the following system calls:
+- `bind(port)`: Bind to a local UDP port.
+- `send(sport, dst_ip, dst_port, buf, len)`: Send a UDP packet.
+- `recv(dport, &src_ip, &src_port, buf, maxlen)`: Receive a UDP packet.
+
+## Testing
+Run `nettest` in the shell to verify functionality.

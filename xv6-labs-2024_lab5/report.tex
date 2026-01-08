@@ -1,0 +1,147 @@
+\documentclass[UTF8,a4paper,12pt]{article}
+\usepackage{ctex}
+\usepackage{graphicx}
+\usepackage{geometry}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{hyperref}
+
+\geometry{left=2.5cm,right=2.5cm,top=2.5cm,bottom=2.5cm}
+
+\title{\textbf{操作系统课程设计 Lab 5: Network Driver 实验报告}}
+\author{Jacob}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{实验目的}
+本次实验旨在为 xv6 操作系统添加网络功能。主要任务包括编写 Intel E1000 网卡驱动程序（包含发送和接收功能），并在此基础上实现一个简单的 UDP 网络协议栈，支持 socket 接口（bind, recv），从而使 xv6 能够与宿主机进行网络通信。
+
+\section{实验内容与实现}
+
+\subsection{Part 1: 网卡驱动 (NIC Driver)}
+实验的第一部分是让 xv6 能够通过 E1000 网卡驱动收发数据包。
+
+\subsubsection{1. 发送功能的实现 (e1000\_transmit)}
+我们实现了 \texttt{e1000\_transmit} 函数。该函数将上层协议栈（ARP/IP）传递下来的 socket buffer (mbuf) 放入发送环形缓冲区（TX Ring）中。
+关键步骤包括：
+\begin{enumerate}
+    \item 读取 \texttt{E1000\_TDT} 寄存器获取下一个可用的描述符索引。
+    \item 检查该描述符的 \texttt{E1000\_TXD\_STAT\_DD} 标志位，确认上一轮发送是否完成。
+    \item 释放旧的缓冲区（如果有），并将新数据的物理地址填入描述符。
+    \item 设置 CMD 标志位（EOP 和 RS）。
+    \item 更新 \texttt{E1000\_TDT} 寄存器通知网卡开始工作。
+\end{enumerate}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\textwidth]{../txone_ok.png}
+    \caption{e1000\_transmit 功能测试通过 (txone)}
+    \label{fig:txone}
+\end{figure}
+
+\subsubsection{2. 接收功能的实现 (e1000\_recv)}
+我们实现了 \texttt{e1000\_recv} 函数。该函数轮询接收环形缓冲区（RX Ring），提取网卡已填充数据包的描述符。
+关键步骤包括：
+\begin{enumerate}
+    \item 读取 \texttt{E1000\_RDT} 并加一取模，获取下一个待处理的描述符位置。
+    \item 检查 \texttt{E1000\_RXD\_STAT\_DD} 标志位，确认是否有新包到达。
+    \item 将缓冲区数据通过 \texttt{net\_rx} 传递给协议栈。
+    \item 分配新的空闲缓冲区（kalloc）替换已被取用的缓冲区，重置描述符状态。
+    \item 更新 \texttt{E1000\_RDT} 寄存器。
+\end{enumerate}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\textwidth]{../rxone.jpg}
+    \caption{e1000\_recv 功能测试通过 (rxone: arp\_rx/ip\_rx)}
+    \label{fig:rxone}
+\end{figure}
+
+\subsection{Part 2: UDP套接字 (UDP Sockets)}
+实验的第二部分是实现用户态网络接口。
+
+\subsubsection{1. 系统调用实现}
+\begin{itemize}
+    \item \textbf{sys\_bind}: 将 Socket 绑定到指定的本地端口。如果端口已被占用则返回错误。
+    \item \textbf{sys\_recv}: 从 Socket 的接收队列中读取数据。如果队列为空，进程进入睡眠状态（sleep），直到被 \texttt{ip\_rx} 唤醒。
+\end{itemize}
+
+\subsubsection{2. 协议栈处理 (ip\_rx)}
+修改了 \texttt{net.c} 中的 \texttt{ip\_rx} 函数。当收到 UDP 包时，根据目的端口号查找对应的 Socket，将数据包挂入该 Socket 的接收队列，并调用 \texttt{wakeup} 唤醒等待的进程。
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\textwidth]{../grade.jpg}
+    \caption{完整测试通过 (Make Grade Score: 171/171)}
+    \label{fig:grade}
+\end{figure}
+
+\section{实质性物证}
+
+\subsection{调试日志 (Debug Log)}
+\begin{itemize}
+    \item \textbf{初始环境搭建}: 切换到 \texttt{net} 分支，确认 \texttt{make qemu} 环境正常。阅读 \texttt{e1000\_dev.h} 熟悉寄存器定义。
+    \item \textbf{发送功能调试}:
+        \begin{itemize}
+            \item \textbf{问题}: 第一次实现时，忘记检查 TX Ring 是否已满（DD标志），导致覆盖未发送数据。
+            \item \textbf{解决}: 增加 \texttt{status \& E1000\_TXD\_STAT\_DD} 检查逻辑。
+            \item \textbf{问题}: 主机端收不到包。
+            \item \textbf{解决}: 发现未添加 \texttt{\_\_sync\_synchronize()} 内存屏障，添加后修复。
+        \end{itemize}
+    \item \textbf{接收功能调试}:
+        \begin{itemize}
+            \item \textbf{问题}: 接收包后数据错乱。
+            \item \textbf{解决}: 发现复用了同一个 mbuf，修改为每次接收后立即 \texttt{kalloc} 新的缓冲区填入 Ring。
+        \end{itemize}
+    \item \textbf{UDP/DNS 调试}:
+        \begin{itemize}
+            \item \textbf{问题}: \texttt{make grade} 中 DNS 测试失败。
+            \item \textbf{排查}: 通过 printf 调试发现 payload 长度不对。
+            \item \textbf{解决}: 修正了 \texttt{sys\_recv} 和 \texttt{ip\_rx} 中关于 IP 头长度和 UDP 包长度的计算公式。
+        \end{itemize}
+\end{itemize}
+
+\subsection{用户手册 (User Manual)}
+\subsubsection{功能特性}
+本系统扩展了 xv6 内核，支持 E1000 网卡驱动及 UDP/IP 协议栈。
+
+\subsubsection{API 接口}
+\begin{lstlisting}[language=C, basicstyle=\small\ttfamily, frame=single]
+// 1. 绑定端口
+// 成功返回 0，失败返回 -1
+int bind(short port);
+
+// 2. 发送数据
+// dst 为目的IP，dport 为目的端口
+int send(short sport, int dst, short dport, char *buf, int len);
+
+// 3. 接收数据
+// 阻塞直到收到数据。src/sport 将填入发送方信息。
+int recv(short dport, int *src, short *sport, char *buf, int maxlen);
+\end{lstlisting}
+
+\subsubsection{使用方法}
+\begin{verbatim}
+$ make qemu
+$ nettest txone  # 测试发送
+$ nettest rxone  # 测试接收 (需配合 server)
+\end{verbatim}
+
+\section{实验心得与 AI 使用感想}
+本次实验是我在操作系统课程中最具挑战性的一次。通过亲手实现网卡驱动，我深刻理解了操作系统内核如何通过 DMA descriptor ring 与外设硬件进行交互，以及软硬件协同工作的奥妙。这也让我明白了为什么网络 I/O 通常是异步的，以及操作系统如何通过中断和轮询的结合来高效处理数据流。
+
+在本次实验中，我借助了 \textbf{GitHub Copilot} 等大模型工具辅助开发，其作用主要体现在以下几个方面：
+
+\begin{enumerate}
+    \item \textbf{文档阅读与概念解析}: E1000 的硬件手册非常厚重，寄存器繁多。通过询问大模型，我能够快速定位到 \texttt{TDT}, \texttt{RDT} 等关键寄存器的作用，以及 \texttt{TX/RX Descriptor} 中各个标志位的含义（如 \texttt{CMD\_EOP}, \texttt{STAT\_DD}），这极大地缩短了我的“冷启动”时间。
+    \item \textbf{代码辅助与纠错}: 在编写驱动代码时，AI 能够根据上下文补全冗长的结构体定义和宏定义代码。更重要的是，它像一位结对编程的导师，在我忘记编写内存屏障（Memory Barrier）或忘记并在临界区加锁时，给出了风险提示，帮助我规避了潜在的并发 Bug。
+    \item \textbf{调试思路启发}: 在遇到 DNS 测试不通过的问题时，我将现象描述给 AI，它提示我关注“数据包长度计算”和“字节序转换”问题。这一提示直接帮助我发现了代码中未正确减去 UDP 头部长度的逻辑错误。
+\end{enumerate}
+
+总的来说，AI 并没有替代我的思考，而是成为了放大我能力的工具，让我从繁琐的语法和文档检索中解放出来，能够更专注于操作系统核心逻辑（如并发控制、内存管理）的思考与实现。
+
+\end{document}
