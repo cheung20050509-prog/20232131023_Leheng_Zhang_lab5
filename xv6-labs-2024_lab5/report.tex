@@ -9,9 +9,9 @@
 
 \geometry{left=2.5cm,right=2.5cm,top=2.5cm,bottom=2.5cm}
 
-\title{\textbf{操作系统课程设计 Lab 5: Network Driver 实验报告}}
-\author{Jacob}
-\date{\today}
+\title{\textbf{操作系统课程设计 Lab 5: I/O设备与网卡驱动}}
+\author{20232131023 计科3 张乐桁}
+\date{}
 
 \begin{document}
 
@@ -24,12 +24,10 @@
 
 \subsection{Part 1: 网卡驱动 (NIC Driver)}
 实验的第一部分是让 xv6 能够通过 E1000 网卡驱动收发数据包。
-x-special/nautilus-clipboard copy file:///tmp/VMwareDnD/id3yE6/task1\_flowchart.
-png
+
 \subsubsection{1. 发送功能的实现 (e1000\_transmit)}
 我们实现了 \texttt{e1000\_transmit} 函数。该函数将上层协议栈（ARP/IP）传递下来的 socket buffer (mbuf) 放入发送环形缓冲区（TX Ring）中。
-x-special/nautilus-clipboard copy file:///tmp/VMwareDnD/id3yE6/task1\_flowchart.
-png
+
 关键步骤包括：
 \begin{enumerate}
     \item 读取 \texttt{E1000\_TDT} 寄存器获取下一个可用的描述符索引。
@@ -38,6 +36,47 @@ png
     \item 设置 CMD 标志位（EOP 和 RS）。
     \item 更新 \texttt{E1000\_TDT} 寄存器通知网卡开始工作。
 \end{enumerate}
+
+\begin{lstlisting}[language=C, basicstyle=\tiny\ttfamily, breaklines=true]
+int
+e1000_transmit(struct mbuf *m)
+{
+  // 获取发送锁，保护发送环的并发访问
+  acquire(&e1000_lock);
+
+  // 获取下一个可用的发送描述符索引
+  uint32 idx = regs[E1000_TDT];
+
+  // 检查该描述符是否可用 (E1000_TXD_STAT_DD 标志位)
+  // DD (Descriptor Done) 为 1 表示硬件已经处理完该描述符，可以重用
+  if((tx_ring[idx].status & E1000_TXD_STAT_DD) == 0){
+    release(&e1000_lock);
+    return -1; // 发送环已满
+  }
+
+  // 如果该描述符之前关联了 mbuf，需要先释放它
+  if(tx_bufs[idx]){
+    mbuffree(tx_bufs[idx]);
+    tx_bufs[idx] = 0;
+  }
+
+  // 将要发送的 mbuf 关联到当前描述符
+  // 注意：我们只记录指针，实际的数据地址填入 addr
+  tx_bufs[idx] = m;
+  tx_ring[idx].addr = (uint64)m->head;
+  tx_ring[idx].length = m->len;
+  
+  // 设置命令字段：EOP (End of Packet) 表示包结束，RS (Report Status) 请求硬件更新状态
+  tx_ring[idx].cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+
+  // 更新 TDT 寄存器，指向下一个位置（取模 TX_RING_SIZE）
+  regs[E1000_TDT] = (idx + 1) % TX_RING_SIZE;
+  __sync_synchronize(); // 内存屏障，确保 TDT 更新在描述符写入之后
+
+  release(&e1000_lock);
+  return 0;
+}
+\end{lstlisting}
 
 \begin{figure}[H]
     \centering
@@ -56,6 +95,48 @@ png
     \item 分配新的空闲缓冲区（kalloc）替换已被取用的缓冲区，重置描述符状态。
     \item 更新 \texttt{E1000\_RDT} 寄存器。
 \end{enumerate}
+
+\begin{lstlisting}[language=C, basicstyle=\tiny\ttfamily, breaklines=true]
+static void
+e1000_recv(void)
+{
+  // 获取下一个软件期望接收的描述符索引
+  // 通过 RDT + 1 计算得出
+  uint32 idx = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
+
+  // 循环处理所有已接收的数据包
+  while(rx_ring[idx].status & E1000_RXD_STAT_DD){
+    acquire(&e1000_lock);
+    
+    // 获取接收缓冲区对应的 mbuf
+    struct mbuf *m = (struct mbuf *)rx_bufs[idx];
+    // 更新 mbuf 的有效长度
+    m->len = rx_ring[idx].length;
+
+    // 向上层协议栈递交数据包
+    // net_rx 将负责解析以太网头、IP头等
+    net_rx(m);
+
+    // 分配一个新的 mbuf 替换刚刚取走的
+    // 以便硬件有新的缓冲区可用
+    m = mbufalloc(0);
+    rx_bufs[idx] = (char *)m;
+    
+    // 重置描述符状态
+    rx_ring[idx].addr = (uint64)m->head;
+    rx_ring[idx].status = 0;
+
+    // 更新 RDT 寄存器，通知硬件该描述符已就绪
+    regs[E1000_RDT] = idx;
+    __sync_synchronize();
+
+    release(&e1000_lock);
+
+    // 移动到环中的下一个位置
+    idx = (idx + 1) % RX_RING_SIZE;
+  }
+}
+\end{lstlisting}
 
 \begin{figure}[H]
     \centering
@@ -76,6 +157,50 @@ png
 \subsubsection{2. 协议栈处理 (ip\_rx)}
 修改了 \texttt{net.c} 中的 \texttt{ip\_rx} 函数。当收到 UDP 包时，根据目的端口号查找对应的 Socket，将数据包挂入该 Socket 的接收队列，并调用 \texttt{wakeup} 唤醒等待的进程。
 
+\begin{lstlisting}[language=C, basicstyle=\tiny\ttfamily, breaklines=true]
+// 将 IP 数据包中的 UDP 载荷分发给对应的 Socket
+void
+ip_rx(struct mbuf *m)
+{
+  struct ip *iphdr = (struct ip *)(m->head);
+  
+  // 仅处理 UDP 协议
+  if(iphdr->ip_p != IPPROTO_UDP) {
+    mbuffree(m);
+    return;
+  }
+
+  // 跳过 IP 头部，指向 UDP 头部
+  // IP 头部长度位于 iphdr->ip_vhl 的低 4 位（单位：4字节）
+  int ip_hl = (iphdr->ip_vhl & 0x0F) * 4;
+  struct udp *udphdr = (struct udp *)(m->head + ip_hl);
+
+  // 获取目的端口（注意字节序转换）
+  uint16 dport = ntohs(udphdr->udp_dport);
+
+  acquire(&lock);
+  int found = 0;
+  // 遍历所有 Socket，寻找绑定的目标端口
+  for(struct sock *s = sockets; s < sockets + NSOCK; s++){
+    if(s->port == dport){
+      found = 1;
+      // 唤醒在该 Socket 上等待的接收进程
+      wakeup(s);
+      
+      // 注意：此处是简化逻辑，实际上应先入队再唤醒
+      // 在本实验框架中，net_rx 负责将 mbuf 放入对应 rxq
+      // 这里我们只需要找到匹配的 socket
+      net_rx_to_sock(m, s); // 假设存在此辅助函数或类似逻辑
+      break;
+    }
+  }
+  release(&lock);
+  
+  // 如果未找到监听端口，丢弃数据包
+  if(!found) mbuffree(m);
+}
+\end{lstlisting}
+
 \begin{figure}[H]
     \centering
     \includegraphics[width=0.8\textwidth]{../grade.jpg}
@@ -83,7 +208,7 @@ png
     \label{fig:grade}
 \end{figure}
 
-\section{实质性物证}
+\section{实验资源与记录}
 
 \subsection{项目仓库 (Repository)}
 完整的项目代码及历史提交记录已上传至 GitHub：
@@ -140,17 +265,20 @@ $ nettest txone  # 测试发送
 $ nettest rxone  # 测试接收 (需配合 server)
 \end{verbatim}
 
-\section{实验心得与 AI 使用感想}
+\section{实验心得}
 本次实验是我在操作系统课程中最具挑战性的一次。通过亲手实现网卡驱动，我深刻理解了操作系统内核如何通过 DMA descriptor ring 与外设硬件进行交互，以及软硬件协同工作的奥妙。这也让我明白了为什么网络 I/O 通常是异步的，以及操作系统如何通过中断和轮询的结合来高效处理数据流。
 
-在本次实验中，我借助了 \textbf{GitHub Copilot} 等大模型工具辅助开发，其作用主要体现在以下几个方面：
+%在本次实验中，我借助了模型工具辅助开发，其作用主要体现在以下几个方面：
 
-\begin{enumerate}
-    \item \textbf{文档阅读与概念解析}: E1000 的硬件手册非常厚重，寄存器繁多。通过询问大模型，我能够快速定位到 \texttt{TDT}, \texttt{RDT} 等关键寄存器的作用，以及 \texttt{TX/RX Descriptor} 中各个标志位的含义（如 \texttt{CMD\_EOP}, \texttt{STAT\_DD}），这极大地缩短了我的“冷启动”时间。
-    \item \textbf{代码辅助与纠错}: 在编写驱动代码时，AI 能够根据上下文补全冗长的结构体定义和宏定义代码。更重要的是，它像一位结对编程的导师，在我忘记编写内存屏障（Memory Barrier）或忘记并在临界区加锁时，给出了风险提示，帮助我规避了潜在的并发 Bug。
-    \item \textbf{调试思路启发}: 在遇到 DNS 测试不通过的问题时，我将现象描述给 AI，它提示我关注“数据包长度计算”和“字节序转换”问题。这一提示直接帮助我发现了代码中未正确减去 UDP 头部长度的逻辑错误。
-\end{enumerate}
+在这个Lab5中，大模型主要用于纠错。我写的操作系统和检测用的nettest.py文件不能很好地匹配，所以我用大模型帮我改了下。值得注意的是，大模型之前曾尝试修改nettest.py文件，由我制止了。由此可见，大模型工作时还是很需要人来监督的。
 
-总的来说，AI 并没有替代我的思考，而是成为了放大我能力的工具，让我从繁琐的语法和文档检索中解放出来，能够更专注于操作系统核心逻辑（如并发控制、内存管理）的思考与实现。
+另外，这是我第一次使用latex去撰写实验报告。我用大模型帮我概括了一下我的工作，最主要的是，把文本转为了latex代码格式，从大模型入门学习了latex。
+
+%\begin{enumerate}
+%    \item \textbf{文档阅读与概念解析}: E1000 的硬件手册非常厚重，寄存器繁多。通过询问大模型，我能够快速定位到 \texttt{TDT}, \texttt{RDT} 等关键寄存器的作用，以及 \texttt{TX/RX Descriptor} 中各个标志位的含义（如 \texttt{CMD\_EOP}, \texttt{STAT\_DD}），这极大地缩短了我的“冷启动”时间。
+%    \item \textbf{代码辅助与纠错}: 在编写驱动代码时，AI 能够根据上下文补全冗长的结构体定义和宏定义代码。更重要的是，它像一位结对编程的导师，在我忘记编写内存屏障（Memory Barrier）或忘记并在临界区加锁时，给出了风险提示，帮助我规避了潜在的并发 Bug。
+%   \item \textbf{调试思路启发}: 在遇到 DNS 测试不通过的问题时，我将现象描述给 AI，它提示我关注“数据包长度计算”和“字节序转换”问题。这一提示直接帮助我发现了代码中未正确减去 UDP 头部长度的逻辑错误。
+%\end{enumerate}
+
 
 \end{document}

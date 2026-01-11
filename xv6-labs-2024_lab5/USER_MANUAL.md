@@ -26,9 +26,6 @@
 ```bash
 # 编译并运行 QEMU
 make qemu
-
-# 编译并运行评分测试
-make grade
 ```
 
 ## 4. API 接口说明
@@ -82,8 +79,9 @@ int recv(short dport, int *src, short *sport, char *buf, int maxlen);
 3. 预期结果: XV6 收到 ARP 及 IP 包并打印日志。
 
 ### 5.3 综合测试 (DNS/Ping)
-1. 直接运行: `make grade`
-2. 系统将自动测试所有网络功能，包括 DNS 请求模拟和 Ping 测试。
+1. 开启终端1运行: `python3 nettest.py grade`
+2. 开启终端2运行: `make qemu`，然后输入 `nettest grade`
+3. 系统将自动测试所有网络功能，包括 DNS 请求模拟和 Ping 测试。
 
 ## 6. 注意事项
 - 本系统 IP 地址硬编码为 `10.0.2.15`，网关为 `10.0.2.2`。

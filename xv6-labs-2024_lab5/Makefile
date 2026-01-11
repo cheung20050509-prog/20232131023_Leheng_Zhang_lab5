@@ -279,7 +279,7 @@ fs.img: mkfs/mkfs README $(UEXTRA) $(UPROGS)
 -include kernel/*.d user/*.d
 
 clean:
-	rm -rf *.tex *.dvi *.idx *.aux *.log *.ind *.ilg *.dSYM *.zip *.pcap \
+	rm -rf *.dvi *.idx *.aux *.log *.ind *.ilg *.dSYM *.zip *.pcap \
 	*/*.o */*.d */*.asm */*.sym \
 	$U/initcode $U/initcode.out $U/usys.S $U/_* \
 	$K/kernel \
@@ -290,7 +290,7 @@ clean:
 GDBPORT = $(shell expr `id -u` % 5000 + 25000)
 # QEMU's gdb stub command line changed in 0.11
 QEMUGDB = $(shell if $(QEMU) -help | grep -q '^-gdb'; \
-	then echo "-gdb tcp::$(GDBPORT)"; \
+	then echo "-gdb tcp:127.0.0.1:$(GDBPORT)"; \
 	else echo "-s -p $(GDBPORT)"; fi)
 ifndef CPUS
 CPUS := 3

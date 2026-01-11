@@ -238,7 +238,7 @@ def make(*target):
     post_make()
 
 def show_command(cmd):
-    from pipes import quote
+    from shlex import quote
     print("\n$", " ".join(map(quote, cmd)))
 
 def maybe_unlink(*paths):
@@ -493,8 +493,10 @@ Failed to shutdown QEMU.  You might need to 'killall qemu' or
         if b"\n" in output:
             try:
                 self.gdb = GDBClient(self.qemu.get_gdb_port(), timeout=2)
+                sys.stdout.write("[gradelib] GDB connection successful.\n") # Debug print
                 raise TerminateTest
             except socket.error:
+                # sys.stdout.write("[gradelib] GDB connection failed, retrying...\n") # Debug print
                 pass
         if not len(output):
             raise TerminateTest
